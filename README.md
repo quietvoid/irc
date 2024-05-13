@@ -41,7 +41,7 @@ Making your own project? [Submit a pull request](https://github.com/aatxe/irc/pu
 
 ## Getting Started
 
-To start using the irc crate with cargo, you can add `irc = "0.15"` to your dependencies in
+To start using the irc crate with cargo, you can add `irc = "1.0.0"` to your dependencies in or you can use the comman `cargo add irc`.
 your Cargo.toml file. The high-level API can be found in [`irc::client::prelude`][irc-prelude].
 You'll find a number of examples to help you get started in `examples/`, throughout the
 documentation, and below.
@@ -89,7 +89,7 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-irc = "0.15.0"
+irc = "1.0.0"
 tokio = { version = "1.0.0", features = ["rt", "rt-multi-thread", "macros", "net", "time"] }
 futures = "0.3.0"
 failure = "0.1.8"
