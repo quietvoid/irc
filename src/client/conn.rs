@@ -3,7 +3,6 @@ use futures_util::{sink::Sink, stream::Stream};
 use pin_project::pin_project;
 use std::{
     fmt,
-    iter::FromIterator,
     pin::Pin,
     task::{Context, Poll},
 };
@@ -38,6 +37,7 @@ use tokio_rustls::client::TlsStream;
 #[cfg(feature = "tls-rust")]
 use tokio_rustls::{
     rustls::client::danger::{ServerCertVerified, ServerCertVerifier},
+    rustls::crypto::{verify_tls12_signature, verify_tls13_signature, CryptoProvider},
     rustls::pki_types::{
         CertificateDer as Certificate, PrivateKeyDer as PrivateKey, ServerName, UnixTime,
     },
@@ -224,56 +224,60 @@ impl Connection {
         tx: UnboundedSender<Message>,
     ) -> error::Result<Transport<TlsStream<TcpStream>>> {
         #[derive(Debug)]
-        struct DangerousAcceptAllVerifier;
+        struct DangerousAcceptAllVerifier(Arc<CryptoProvider>);
+
+        impl DangerousAcceptAllVerifier {
+            fn new() -> Self {
+                DangerousAcceptAllVerifier(CryptoProvider::get_default()
+                    .expect("no process default crypto provider has been set - application must call CryptoProvider::install_default()")
+                    .clone())
+            }
+        }
 
         impl ServerCertVerifier for DangerousAcceptAllVerifier {
             fn verify_server_cert(
                 &self,
-                _: &Certificate,
-                _: &[Certificate],
-                _: &ServerName,
-                _: &[u8],
-                _: UnixTime,
+                _end_entity: &Certificate,
+                _intermediates: &[Certificate],
+                _server_name: &ServerName,
+                _oscp: &[u8],
+                _now: UnixTime,
             ) -> Result<ServerCertVerified, rustls::Error> {
                 return Ok(ServerCertVerified::assertion());
             }
 
             fn verify_tls12_signature(
                 &self,
-                _message: &[u8],
-                _cert: &Certificate<'_>,
-                _dss: &rustls::DigitallySignedStruct,
+                message: &[u8],
+                cert: &Certificate<'_>,
+                dss: &rustls::DigitallySignedStruct,
             ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error>
             {
-                Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+                verify_tls12_signature(
+                    message,
+                    cert,
+                    dss,
+                    &self.0.signature_verification_algorithms,
+                )
             }
 
             fn verify_tls13_signature(
                 &self,
-                _message: &[u8],
-                _cert: &Certificate<'_>,
-                _dss: &rustls::DigitallySignedStruct,
+                message: &[u8],
+                cert: &Certificate<'_>,
+                dss: &rustls::DigitallySignedStruct,
             ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error>
             {
-                Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+                verify_tls13_signature(
+                    message,
+                    cert,
+                    dss,
+                    &self.0.signature_verification_algorithms,
+                )
             }
 
             fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-                vec![
-                    rustls::SignatureScheme::RSA_PKCS1_SHA1,
-                    rustls::SignatureScheme::ECDSA_SHA1_Legacy,
-                    rustls::SignatureScheme::RSA_PKCS1_SHA256,
-                    rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
-                    rustls::SignatureScheme::RSA_PKCS1_SHA384,
-                    rustls::SignatureScheme::ECDSA_NISTP384_SHA384,
-                    rustls::SignatureScheme::RSA_PKCS1_SHA512,
-                    rustls::SignatureScheme::ECDSA_NISTP521_SHA512,
-                    rustls::SignatureScheme::RSA_PSS_SHA256,
-                    rustls::SignatureScheme::RSA_PSS_SHA384,
-                    rustls::SignatureScheme::RSA_PSS_SHA512,
-                    rustls::SignatureScheme::ED25519,
-                    rustls::SignatureScheme::ED448,
-                ]
+                self.0.signature_verification_algorithms.supported_schemes()
             }
         }
 
@@ -334,14 +338,13 @@ impl Connection {
         let tls_config = if config.dangerously_accept_invalid_certs() {
             let builder = builder
                 .dangerous()
-                .with_custom_certificate_verifier(Arc::new(DangerousAcceptAllVerifier));
+                .with_custom_certificate_verifier(Arc::new(DangerousAcceptAllVerifier::new()));
             make_client_auth!(builder)
         } else {
-            let mut root_store = RootCertStore::from_iter(
-                webpki_roots::TLS_SERVER_ROOTS
-                    .iter()
-                    .map(|ta| ta.to_owned()),
-            );
+            let mut root_store = webpki_roots::TLS_SERVER_ROOTS
+                .iter()
+                .cloned()
+                .collect::<RootCertStore>();
 
             if let Some(cert_path) = config.cert_path() {
                 if let Ok(file) = File::open(cert_path) {
