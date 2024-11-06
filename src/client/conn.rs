@@ -26,8 +26,6 @@ use native_tls::{Certificate, Identity, TlsConnector};
 use tokio_native_tls::{self, TlsStream};
 
 #[cfg(feature = "tls-rust")]
-use rustls_pemfile::certs;
-#[cfg(feature = "tls-rust")]
 use std::{
     convert::TryFrom,
     fs::File,
@@ -38,10 +36,12 @@ use std::{
 use tokio_rustls::client::TlsStream;
 #[cfg(feature = "tls-rust")]
 use tokio_rustls::{
-    rustls::client::{ServerCertVerified, ServerCertVerifier},
-    rustls::{
-        self, Certificate, ClientConfig, OwnedTrustAnchor, PrivateKey, RootCertStore, ServerName,
+    rustls::client::danger::{ServerCertVerified, ServerCertVerifier},
+    rustls::crypto::{verify_tls12_signature, verify_tls13_signature, CryptoProvider},
+    rustls::pki_types::{
+        CertificateDer as Certificate, PrivateKeyDer as PrivateKey, ServerName, UnixTime,
     },
+    rustls::{self, ClientConfig, RootCertStore},
     TlsConnector,
 };
 
@@ -223,39 +223,84 @@ impl Connection {
         config: &Config,
         tx: UnboundedSender<Message>,
     ) -> error::Result<Transport<TlsStream<TcpStream>>> {
-        struct DangerousAcceptAllVerifier;
+        #[derive(Debug)]
+        struct DangerousAcceptAllVerifier(Arc<CryptoProvider>);
+
+        impl DangerousAcceptAllVerifier {
+            fn new() -> Self {
+                DangerousAcceptAllVerifier(CryptoProvider::get_default()
+                    .expect("no process default crypto provider has been set - application must call CryptoProvider::install_default()")
+                    .clone())
+            }
+        }
 
         impl ServerCertVerifier for DangerousAcceptAllVerifier {
             fn verify_server_cert(
                 &self,
-                _: &Certificate,
-                _: &[Certificate],
-                _: &ServerName,
-                _: &mut dyn Iterator<Item = &[u8]>,
-                _: &[u8],
-                _: std::time::SystemTime,
+                _end_entity: &Certificate,
+                _intermediates: &[Certificate],
+                _server_name: &ServerName,
+                _oscp: &[u8],
+                _now: UnixTime,
             ) -> Result<ServerCertVerified, rustls::Error> {
                 return Ok(ServerCertVerified::assertion());
+            }
+
+            fn verify_tls12_signature(
+                &self,
+                message: &[u8],
+                cert: &Certificate<'_>,
+                dss: &rustls::DigitallySignedStruct,
+            ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error>
+            {
+                verify_tls12_signature(
+                    message,
+                    cert,
+                    dss,
+                    &self.0.signature_verification_algorithms,
+                )
+            }
+
+            fn verify_tls13_signature(
+                &self,
+                message: &[u8],
+                cert: &Certificate<'_>,
+                dss: &rustls::DigitallySignedStruct,
+            ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error>
+            {
+                verify_tls13_signature(
+                    message,
+                    cert,
+                    dss,
+                    &self.0.signature_verification_algorithms,
+                )
+            }
+
+            fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+                self.0.signature_verification_algorithms.supported_schemes()
             }
         }
 
         enum ClientAuth {
-            SingleCert(Vec<Certificate>, PrivateKey),
+            SingleCert(Vec<Certificate<'static>>, PrivateKey<'static>),
             NoClientAuth,
         }
 
         let client_auth = if let Some(client_cert_path) = config.client_cert_path() {
             if let Ok(file) = File::open(client_cert_path) {
-                let client_cert_data = certs(&mut BufReader::new(file)).map_err(|_| {
-                    error::Error::Io(Error::new(ErrorKind::InvalidInput, "invalid cert"))
+                let client_cert_data =
+                    rustls_pemfile::certs(&mut BufReader::new(file)).collect::<Result<_, _>>()?;
+
+                let client_cert_pass = config.client_cert_pass();
+                let client_cert_pass = rustls_pemfile::private_key(
+                    &mut client_cert_pass.as_bytes(),
+                )?
+                .ok_or_else(|| error::Error::InvalidConfig {
+                    path: config.path(),
+                    cause: error::ConfigError::UnknownConfigFormat {
+                        format: "Failed to parse private key".to_string(),
+                    },
                 })?;
-
-                let client_cert_data = client_cert_data
-                    .into_iter()
-                    .map(Certificate)
-                    .collect::<Vec<_>>();
-
-                let client_cert_pass = PrivateKey(Vec::from(config.client_cert_pass()));
 
                 log::info!(
                     "Using {} for client certificate authentication.",
@@ -279,7 +324,7 @@ impl Connection {
             ($builder:expr) => {
                 match client_auth {
                     ClientAuth::SingleCert(data, pass) => {
-                        $builder.with_single_cert(data, pass).map_err(|err| {
+                        $builder.with_client_auth_cert(data, pass).map_err(|err| {
                             error::Error::Io(Error::new(ErrorKind::InvalidInput, err))
                         })?
                     }
@@ -288,35 +333,32 @@ impl Connection {
             };
         }
 
-        let builder = ClientConfig::builder()
-            .with_safe_default_cipher_suites()
-            .with_safe_default_kx_groups()
-            .with_safe_default_protocol_versions()?;
+        let builder = ClientConfig::builder();
 
         let tls_config = if config.dangerously_accept_invalid_certs() {
-            let builder =
-                builder.with_custom_certificate_verifier(Arc::new(DangerousAcceptAllVerifier));
+            let builder = builder
+                .dangerous()
+                .with_custom_certificate_verifier(Arc::new(DangerousAcceptAllVerifier::new()));
             make_client_auth!(builder)
         } else {
-            let mut root_store = RootCertStore::empty();
-
-            root_store.add_server_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.0.iter().map(
-                |ta| {
-                    OwnedTrustAnchor::from_subject_spki_name_constraints(
-                        ta.subject,
-                        ta.spki,
-                        ta.name_constraints,
-                    )
-                },
-            ));
+            let mut root_store = webpki_roots::TLS_SERVER_ROOTS
+                .iter()
+                .cloned()
+                .collect::<RootCertStore>();
 
             if let Some(cert_path) = config.cert_path() {
-                if let Ok(data) = std::fs::read(cert_path) {
-                    root_store.add(&Certificate(data)).map_err(|_| {
-                        error::Error::Io(Error::new(ErrorKind::InvalidInput, "invalid cert"))
-                    })?;
+                if let Ok(file) = File::open(cert_path) {
+                    let certificates = rustls_pemfile::certs(&mut BufReader::new(file))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let (added, ignored) = root_store.add_parsable_certificates(certificates);
 
-                    log::info!("Added {} to trusted certificates.", cert_path);
+                    if ignored > 0 {
+                        log::warn!("Failed to parse some certificates in {}", cert_path);
+                    }
+
+                    if added > 0 {
+                        log::info!("Added {} to trusted certificates.", cert_path);
+                    }
                 } else {
                     return Err(error::Error::InvalidConfig {
                         path: config.path(),
@@ -332,7 +374,7 @@ impl Connection {
         };
 
         let connector = TlsConnector::from(Arc::new(tls_config));
-        let domain = ServerName::try_from(config.server()?)?;
+        let domain = ServerName::try_from(config.server()?)?.to_owned();
         let stream = Self::new_stream(config).await?;
         let stream = connector.connect(domain, stream).await?;
         let framed = Framed::new(stream, IrcCodec::new(config.encoding())?);
