@@ -58,6 +58,7 @@ use irc::client::prelude::*;
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
+    // We can also load the Config at runtime via Config::load("path/to/config.toml")
     let config = Config {
         nickname: Some("the-irc-crate".to_owned()),
         server: Some("chat.freenode.net".to_owned()),
