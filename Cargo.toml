@@ -24,7 +24,7 @@ members = [ "./", "irc-proto/" ]
 
 
 [features]
-default = ["ctcp", "tls-native", "channel-lists", "toml_config"]
+default = ["ctcp", "tls-native", "channel-lists", "toml_config", "encoding"]
 ctcp = []
 channel-lists = []
 
@@ -39,11 +39,11 @@ proxy = ["tokio-socks"]
 
 tls-native = ["native-tls", "tokio-native-tls"]
 tls-rust = ["tokio-rustls", "webpki-roots", "rustls-pemfile"]
-
+encoding = ["dep:encoding", "irc-proto/encoding"]
 
 [dependencies]
 chrono = { version = "0.4.24", default-features = false, features = ["clock", "std"] }
-encoding = "0.2.33"
+encoding = { version = "0.2.33", optional = true }
 futures-util = { version = "0.3.30", default-features = false, features = ["alloc", "sink"] }
 irc-proto = { version = "1.0.0", path = "irc-proto" }
 log = "0.4.21"

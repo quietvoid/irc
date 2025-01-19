@@ -386,22 +386,31 @@ impl Connection {
         config: &Config,
         tx: UnboundedSender<Message>,
     ) -> error::Result<Transport<MockStream>> {
-        use encoding::{label::encoding_from_whatwg_label, EncoderTrap};
-
-        let encoding = encoding_from_whatwg_label(config.encoding()).ok_or_else(|| {
-            error::Error::UnknownCodec {
-                codec: config.encoding().to_owned(),
-            }
-        })?;
-
         let init_str = config.mock_initial_value();
-        let initial = encoding
-            .encode(init_str, EncoderTrap::Replace)
-            .map_err(|data| error::Error::CodecFailed {
-                codec: encoding.name(),
-                data: data.into_owned(),
-            })?;
 
+        let initial = {
+            #[cfg(feature = "encoding")]
+            {
+                use encoding::{label::encoding_from_whatwg_label, EncoderTrap};
+
+                let encoding = encoding_from_whatwg_label(config.encoding()).ok_or_else(|| {
+                    error::Error::UnknownCodec {
+                        codec: config.encoding().to_owned(),
+                    }
+                })?;
+                encoding
+                    .encode(init_str, EncoderTrap::Replace)
+                    .map_err(|data| error::Error::CodecFailed {
+                        codec: encoding.name(),
+                        data: data.into_owned(),
+                    })?
+            }
+
+            #[cfg(not(feature = "encoding"))]
+            {
+                init_str.as_bytes()
+            }
+        };
         let stream = MockStream::new(&initial);
         let framed = Framed::new(stream, IrcCodec::new(config.encoding())?);
 

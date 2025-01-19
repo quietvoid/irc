@@ -18,7 +18,7 @@ travis-ci = { repository = "aatxe/irc" }
 default = ["bytes", "tokio", "tokio-util"]
 
 [dependencies]
-encoding = "0.2.33"
+encoding = { version = "0.2.33", optional = true }
 thiserror = "1.0.40"
 
 bytes = { version = "1.4.0", optional = true }
