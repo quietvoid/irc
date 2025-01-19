@@ -52,12 +52,12 @@ documentation, and below.
 
 The release of v0.14 replaced all existing APIs with one based on async/await.
 
-```rust,no_run,edition2018
-use irc::client::prelude::*;
+```rust,no_run,edition2021
 use futures::prelude::*;
+use irc::client::prelude::*;
 
 #[tokio::main]
-async fn main() -> Result<(), failure::Error> {
+async fn main() -> Result<(), anyhow::Error> {
     // We can also load the Config at runtime via Config::load("path/to/config.toml")
     let config = Config {
         nickname: Some("the-irc-crate".to_owned()),
@@ -65,7 +65,6 @@ async fn main() -> Result<(), failure::Error> {
         channels: vec!["#test".to_owned()],
         ..Config::default()
     };
-
     let mut client = Client::from_config(config).await?;
     client.identify()?;
 
@@ -80,19 +79,25 @@ async fn main() -> Result<(), failure::Error> {
 ```
 
 Example Cargo.toml file:
-```rust,no_run,edition2018
+```rust,no_run,edition2021
 [package]
 name = "example"
 version = "0.1.0"
-edition = "2018"
+edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+anyhow = "1.0"
+futures = "0.3"
 irc = "1.0.0"
-tokio = { version = "1.0.0", features = ["rt", "rt-multi-thread", "macros", "net", "time"] }
-futures = "0.3.0"
-failure = "0.1.8"
+tokio = { version = "1.0", features = [
+    "rt",
+    "rt-multi-thread",
+    "macros",
+    "net",
+    "time",
+] }
 ```
 
 ## Configuring IRC Clients
