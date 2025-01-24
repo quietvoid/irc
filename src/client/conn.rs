@@ -341,10 +341,15 @@ impl Connection {
                 .with_custom_certificate_verifier(Arc::new(DangerousAcceptAllVerifier::new()));
             make_client_auth!(builder)
         } else {
-            let mut root_store = webpki_roots::TLS_SERVER_ROOTS
-                .iter()
-                .cloned()
-                .collect::<RootCertStore>();
+            let mut root_store = RootCertStore::empty();
+
+            #[cfg(feature = "webpki-roots")]
+            root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+
+            let native_certs = rustls_native_certs::load_native_certs();
+            for cert in native_certs.certs {
+                root_store.add(cert.into())?;
+            }
 
             if let Some(cert_path) = config.cert_path() {
                 if let Ok(file) = File::open(cert_path) {
